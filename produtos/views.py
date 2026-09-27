@@ -8,6 +8,7 @@ from .models import Produto
 
 @require_http_methods(['GET', 'POST'])
 def home(request):
+    print('home')
     if request.method == 'POST':
         form = ProdutoForm(request.POST)
         if form.is_valid():
