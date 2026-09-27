@@ -1,0 +1,63 @@
+# Metricas de CPU, RAM, disco, rede, processos do host e dos containers.
+metricbeat.modules:
+  - module: system
+    period: 10s
+    metricsets:
+      - cpu
+      - load
+      - memory
+      - network
+      - process
+      - process_summary
+      - socket_summary
+      - filesystem
+      - fsstat
+      - diskio
+    processes: [".*"]
+    process.include_top_n:
+      by_cpu: 10
+      by_memory: 10
+    cpu.metrics: ["percentages", "normalized_percentages"]
+
+  - module: docker
+    period: 10s
+    hosts: ["unix:///var/run/docker.sock"]
+    metricsets:
+      - container
+      - cpu
+      - diskio
+      - event
+      - healthcheck
+      - info
+      - memory
+      - network
+
+  - module: elasticsearch
+    xpack.enabled: false
+    period: 30s
+    hosts: ["http://elasticsearch:9200"]
+    username: "elastic"
+    password: "${ELASTIC_PASSWORD}"
+    metricsets: ["node_stats", "cluster_stats"]
+
+processors:
+  - add_host_metadata: ~
+  - add_docker_metadata: ~
+
+setup.template.settings:
+  index.number_of_shards: 1
+  index.number_of_replicas: 0
+
+setup.kibana:
+  host: "http://kibana:5601"
+  username: "elastic"
+  password: "${ELASTIC_PASSWORD}"
+setup.dashboards.enabled: true
+
+output.elasticsearch:
+  hosts: ["http://elasticsearch:9200"]
+  username: "elastic"
+  password: "${ELASTIC_PASSWORD}"
+
+logging.level: info
+monitoring.enabled: false

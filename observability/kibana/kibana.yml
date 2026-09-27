@@ -1,0 +1,14 @@
+server.name: kibana
+server.host: 0.0.0.0
+server.publicBaseUrl: http://localhost:5601
+
+elasticsearch.hosts: ["http://elasticsearch:9200"]
+elasticsearch.username: kibana_system
+elasticsearch.password: ${KIBANA_PASSWORD}
+
+xpack.encryptedSavedObjects.encryptionKey: ${KIBANA_ENCRYPTION_KEY}
+xpack.reporting.encryptionKey: ${KIBANA_REPORTING_KEY}
+xpack.security.encryptionKey: ${KIBANA_SECURITY_KEY}
+
+xpack.fleet.isAirGapped: false
+telemetry.optIn: false

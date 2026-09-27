@@ -1,0 +1,24 @@
+# Recebe traces (fluxo de requisicao), erros e metricas de transacao (tempo de resposta)
+# dos agentes APM (ex.: elastic-apm para Django).
+apm-server:
+  host: "0.0.0.0:8200"
+  # Aguarda o pacote de integracao APM ser instalado no Kibana (feito pelo servico setup-kibana)
+  data_streams.wait_for_integration: true
+  # Permite envio de metricas do browser (Real User Monitoring) se necessario
+  rum.enabled: true
+  rum.allow_origins: ["*"]
+
+kibana:
+  enabled: true
+  host: "http://kibana:5601"
+  username: "elastic"
+  password: "${ELASTIC_PASSWORD}"
+
+output.elasticsearch:
+  hosts: ["http://elasticsearch:9200"]
+  username: "elastic"
+  password: "${ELASTIC_PASSWORD}"
+
+logging.level: info
+logging.to_stderr: true
+monitoring.enabled: false

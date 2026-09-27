@@ -1,0 +1,188 @@
+name: observability
+
+x-build-args: &build-args
+  ELASTIC_VERSION: ${ELASTIC_VERSION:-8.17.0}
+
+services:
+  elasticsearch:
+    build:
+      context: ./elasticsearch
+      args: *build-args
+    container_name: observability-elasticsearch
+    environment:
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:?defina ELASTIC_PASSWORD no .env}
+      ES_JAVA_OPTS: ${ES_JAVA_OPTS:--Xms1g -Xmx1g}
+    ports:
+      - "9200:9200"
+    volumes:
+      - es-data:/usr/share/elasticsearch/data
+    ulimits:
+      memlock: { soft: -1, hard: -1 }
+      nofile: { soft: 65536, hard: 65536 }
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s -u elastic:$${ELASTIC_PASSWORD} http://localhost:9200/_cluster/health | grep -qE '\"status\":\"(green|yellow)\"'"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    networks: [elastic]
+    restart: unless-stopped
+
+  # Define a senha do usuario kibana_system (executa uma vez e sai)
+  setup-users:
+    image: docker.elastic.co/elasticsearch/elasticsearch:${ELASTIC_VERSION:-8.17.0}
+    container_name: observability-setup-users
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    environment:
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD}
+      KIBANA_PASSWORD: ${KIBANA_PASSWORD:?defina KIBANA_PASSWORD no .env}
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        curl -sf -X POST -u "elastic:$${ELASTIC_PASSWORD}" \
+          -H "Content-Type: application/json" \
+          http://elasticsearch:9200/_security/user/kibana_system/_password \
+          -d "{\"password\":\"$${KIBANA_PASSWORD}\"}" && echo "kibana_system OK"
+    networks: [elastic]
+    restart: "no"
+
+  kibana:
+    build:
+      context: ./kibana
+      args: *build-args
+    container_name: observability-kibana
+    depends_on:
+      setup-users:
+        condition: service_completed_successfully
+    environment:
+      KIBANA_PASSWORD: ${KIBANA_PASSWORD}
+      KIBANA_ENCRYPTION_KEY: ${KIBANA_ENCRYPTION_KEY:?defina KIBANA_ENCRYPTION_KEY no .env}
+      KIBANA_REPORTING_KEY: ${KIBANA_REPORTING_KEY:?defina KIBANA_REPORTING_KEY no .env}
+      KIBANA_SECURITY_KEY: ${KIBANA_SECURITY_KEY:?defina KIBANA_SECURITY_KEY no .env}
+    ports:
+      - "5601:5601"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:5601/api/status | grep -q '\"level\":\"available\"'"]
+      interval: 10s
+      timeout: 5s
+      retries: 40
+      start_period: 30s
+    networks: [elastic]
+    restart: unless-stopped
+
+  # Instala o pacote de integracao APM no Kibana (templates/pipelines dos traces)
+  setup-apm:
+    image: docker.elastic.co/elasticsearch/elasticsearch:${ELASTIC_VERSION:-8.17.0}
+    container_name: observability-setup-apm
+    depends_on:
+      kibana:
+        condition: service_healthy
+    environment:
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD}
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        set -e
+        curl -sf -X POST -u "elastic:$${ELASTIC_PASSWORD}" -H "kbn-xsrf: true" \
+          http://kibana:5601/api/fleet/setup
+        curl -sf -X POST -u "elastic:$${ELASTIC_PASSWORD}" -H "kbn-xsrf: true" \
+          -H "Content-Type: application/json" -d '{"force":true}' \
+          http://kibana:5601/api/fleet/epm/packages/apm
+        echo "APM integration OK"
+    networks: [elastic]
+    restart: "no"
+
+  apm-server:
+    build:
+      context: ./apm-server
+      args: *build-args
+    container_name: observability-apm-server
+    depends_on:
+      setup-apm:
+        condition: service_completed_successfully
+    environment:
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD}
+    ports:
+      - "8200:8200"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/8200'"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    networks: [elastic]
+    restart: unless-stopped
+
+  filebeat:
+    build:
+      context: ./filebeat
+      args: *build-args
+    container_name: observability-filebeat
+    user: root
+    depends_on:
+      setup-apm:
+        condition: service_completed_successfully
+    environment:
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD}
+    volumes:
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ${APP_LOG_DIR:-./app-logs}:/var/log/app:ro
+      - filebeat-data:/usr/share/filebeat/data
+    networks: [elastic]
+    restart: unless-stopped
+
+  metricbeat:
+    build:
+      context: ./metricbeat
+      args: *build-args
+    container_name: observability-metricbeat
+    user: root
+    depends_on:
+      setup-apm:
+        condition: service_completed_successfully
+    environment:
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /proc:/hostfs/proc:ro
+      - /sys/fs/cgroup:/hostfs/sys/fs/cgroup:ro
+      - /:/hostfs:ro
+      - metricbeat-data:/usr/share/metricbeat/data
+    pid: host
+    networks: [elastic]
+    restart: unless-stopped
+
+  heartbeat:
+    build:
+      context: ./heartbeat
+      args: *build-args
+    container_name: observability-heartbeat
+    user: root
+    depends_on:
+      setup-apm:
+        condition: service_completed_successfully
+    environment:
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD}
+      APP_URL: ${APP_URL:-http://host.docker.internal:8000}
+      APP_HEALTH_URL: ${APP_HEALTH_URL:-http://host.docker.internal:8000/}
+      APP_HOST: ${APP_HOST:-host.docker.internal}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    cap_add:
+      - NET_RAW
+    volumes:
+      - heartbeat-data:/usr/share/heartbeat/data
+    networks: [elastic]
+    restart: unless-stopped
+
+volumes:
+  es-data:
+  filebeat-data:
+  metricbeat-data:
+  heartbeat-data:
+
+networks:
+  elastic:
+    name: elastic
+    driver: bridge

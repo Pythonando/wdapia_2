@@ -1,0 +1,65 @@
+# Disponibilidade (uptime) e tempo de resposta (RTT) da aplicacao.
+heartbeat.monitors:
+  - type: http
+    id: django-http
+    name: Django - HTTP
+    schedule: "@every 10s"
+    urls: ["${APP_HEALTH_URL}"]
+    timeout: 5s
+    check.response.status: [200, 301, 302]
+    tags: ["django", "http"]
+
+  - type: tcp
+    id: django-tcp
+    name: Django - Porta TCP
+    schedule: "@every 10s"
+    hosts: ["${APP_HOST}:8000"]
+    timeout: 5s
+    tags: ["django", "tcp"]
+
+  - type: icmp
+    id: django-icmp
+    name: Django - Host (ping)
+    schedule: "@every 30s"
+    hosts: ["${APP_HOST}"]
+    tags: ["django", "icmp"]
+
+  - type: http
+    id: elasticsearch-http
+    name: Elasticsearch
+    schedule: "@every 30s"
+    urls: ["http://elasticsearch:9200"]
+    username: "elastic"
+    password: "${ELASTIC_PASSWORD}"
+    check.response.status: [200]
+    tags: ["elastic-stack"]
+
+  - type: http
+    id: kibana-http
+    name: Kibana
+    schedule: "@every 30s"
+    urls: ["http://kibana:5601/api/status"]
+    username: "elastic"
+    password: "${ELASTIC_PASSWORD}"
+    check.response.status: [200]
+    tags: ["elastic-stack"]
+
+processors:
+  - add_observer_metadata: ~
+
+setup.template.settings:
+  index.number_of_shards: 1
+  index.number_of_replicas: 0
+
+setup.kibana:
+  host: "http://kibana:5601"
+  username: "elastic"
+  password: "${ELASTIC_PASSWORD}"
+
+output.elasticsearch:
+  hosts: ["http://elasticsearch:9200"]
+  username: "elastic"
+  password: "${ELASTIC_PASSWORD}"
+
+logging.level: info
+monitoring.enabled: false

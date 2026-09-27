@@ -1,0 +1,79 @@
+# Coleta logs de todos os containers Docker + arquivos de log da aplicacao.
+filebeat.autodiscover:
+  providers:
+    - type: docker
+      hints.enabled: true
+      hints.default_config:
+        type: container
+        paths:
+          - /var/lib/docker/containers/${data.docker.container.id}/*.log
+      templates:
+        # Nao coleta os logs da propria stack de observabilidade
+        - condition:
+            contains:
+              docker.container.name: "observability-"
+          config:
+            - type: container
+              paths:
+                - /var/lib/docker/containers/${data.docker.container.id}/*.log
+              enabled: false
+
+filebeat.inputs:
+  # Logs em arquivo do Django (ex.: LOGGING com FileHandler em JSON)
+  - type: filestream
+    id: django-app-logs
+    paths:
+      - /var/log/app/*.log
+    parsers:
+      # Logs JSON do Django: campos (trace.id, transaction.id, level...) vao para a raiz do evento
+      - ndjson:
+          target: ""
+          add_error_key: true
+          message_key: message
+      - multiline:
+          type: pattern
+          pattern: '^Traceback|^\s+File |^\s+at |^[A-Za-z_.]+(Error|Exception)'
+          negate: false
+          match: after
+    fields:
+      log_source: django-file
+    fields_under_root: true
+
+processors:
+  - add_host_metadata: ~
+  - add_docker_metadata: ~
+  # Se a linha for JSON (ex.: python-json-logger), expande os campos
+  - decode_json_fields:
+      fields: ["message"]
+      target: "app"
+      overwrite_keys: false
+      add_error_key: false
+  # Marca linhas de erro para facilitar filtros/alertas no Kibana
+  - script:
+      lang: javascript
+      source: >
+        function process(event) {
+          var m = (event.Get("message") || "").toString();
+          if (/\b(ERROR|CRITICAL|FATAL|Traceback|Exception)\b/.test(m)) {
+            event.Tag("app-error");
+          }
+        }
+
+setup.template.settings:
+  index.number_of_shards: 1
+  index.number_of_replicas: 0
+setup.ilm.enabled: true
+
+setup.kibana:
+  host: "http://kibana:5601"
+  username: "elastic"
+  password: "${ELASTIC_PASSWORD}"
+setup.dashboards.enabled: true
+
+output.elasticsearch:
+  hosts: ["http://elasticsearch:9200"]
+  username: "elastic"
+  password: "${ELASTIC_PASSWORD}"
+
+logging.level: info
+monitoring.enabled: false
