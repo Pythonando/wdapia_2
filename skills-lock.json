@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "skills": {
+    "django-expert": {
+      "source": "vintasoftware/django-ai-plugins",
+      "sourceType": "github",
+      "skillPath": "skills/django-expert/SKILL.md",
+      "computedHash": "496dca1506ff9a57fdfeddab3404995ecaf06874cf5a1fa815cd87a6d38621cd"
+    },
+    "django-tdd": {
+      "source": "affaan-m/ecc",
+      "sourceType": "github",
+      "skillPath": "skills/django-tdd/SKILL.md",
+      "computedHash": "65809c76dd072aa8d59c32d9119987429e15047b5ea4708003de145327710db4"
+    }
+  }
+}

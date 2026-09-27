@@ -1,0 +1,159 @@
+# Stack isolada para teste de carga: banco, (Redis), (worker), web e Locust na
+# mesma rede. Configurável por variáveis (todas com default) — nada aqui é
+# específico de um projeto.
+#
+# Use pelo `run_load_test.sh`. Manualmente:
+#
+#   export COMPOSE_PROJECT_NAME=loadtest-meuprojeto
+#   docker compose -f docker-compose.loadtest.yml up -d --build db web
+#   docker compose -f docker-compose.loadtest.yml run --rm locust ...
+#   docker compose -f docker-compose.loadtest.yml down -v
+#
+# Serviços opcionais via profile: `--profile redis`, `--profile worker`.
+#
+# Variáveis (export no shell ou use o run_load_test.sh):
+#   LOADTEST_WEB_DOCKERFILE     Dockerfile do web, relativo à raiz do repo (Dockerfile)
+#   LOADTEST_WORKER_DOCKERFILE  Dockerfile do worker (Dockerfile)
+#   LOADTEST_WORKER_COMMAND     comando do worker (obrigatório se usar --with-worker)
+#   LOADTEST_APP_DIR            WORKDIR do código no container web (/app)
+#   LOADTEST_CONTAINER_PORT     porta em que o web escuta no container (8000)
+#   LOADTEST_WEB_PORT           porta publicada no host (8001)
+#   LOADTEST_HEALTH_PATH        rota leve e pública p/ healthcheck (/)
+#   LOADTEST_DB_IMAGE / _NAME / _USER / _PASSWORD   (postgres:16 / app / app / app)
+#   GUNICORN_WORKERS / GUNICORN_THREADS   repassados ao web; só têm efeito se o
+#                               entrypoint da imagem os lê
+#
+# O contexto de build é a raiz do repositório (../../../.., a partir deste
+# arquivo, com a skill em <raiz>/.claude/skills/<skill>/scripts/).
+
+x-django-env: &django-env
+  # DEBUG=False é obrigatório: com DEBUG=True o Django acumula todas as queries
+  # em memória e a medição de latência fica inflada e não representativa.
+  DEBUG: "False"
+  # As demais variáveis (SECRET_KEY, banco, broker, chaves) vêm do loadtest.env.
+
+services:
+  db:
+    image: "${LOADTEST_DB_IMAGE:-postgres:16}"
+    environment:
+      POSTGRES_DB: "${LOADTEST_DB_NAME:-app}"
+      POSTGRES_USER: "${LOADTEST_DB_USER:-app}"
+      POSTGRES_PASSWORD: "${LOADTEST_DB_PASSWORD:-app}"
+    # tmpfs: o banco vive em RAM. O teste fica reproduzível (sem I/O de disco
+    # variando entre runs) e o `down -v` deixa a máquina limpa. Específico de
+    # Postgres — para outro banco, ajuste o caminho (e a imagem).
+    tmpfs:
+      - /var/lib/postgresql/data
+    command: >
+      postgres
+      -c max_connections=200
+      -c shared_buffers=256MB
+      -c log_min_duration_statement=1000
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    profiles: ["redis"]
+    image: redis:7-alpine
+    command: redis-server --save "" --appendonly no
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  web:
+    build:
+      context: ../../../..
+      dockerfile: "${LOADTEST_WEB_DOCKERFILE:-Dockerfile}"
+    env_file: loadtest.env
+    environment:
+      <<: *django-env
+      # Ajuste para simular outra configuração de produção — e registre a
+      # mudança no relatório, pois invalida a comparação com baselines feitos em
+      # configuração diferente.
+      GUNICORN_WORKERS: "${GUNICORN_WORKERS:-2}"
+      GUNICORN_THREADS: "${GUNICORN_THREADS:-2}"
+      PORT: "${LOADTEST_CONTAINER_PORT:-8000}"
+    volumes:
+      # Só a skill entra por bind mount, para rodar o seed dentro do container
+      # sem rebuildar a imagem.
+      - "../:${LOADTEST_APP_DIR:-/app}/.claude/skills/load-testing-geral:ro"
+    ports:
+      - "${LOADTEST_WEB_PORT:-8001}:${LOADTEST_CONTAINER_PORT:-8000}"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      # Qualquer resposta 2xx/3xx (urllib segue redirect) na rota leve. Usa o
+      # python da própria imagem, então não exige curl instalado.
+      test:
+        - "CMD-SHELL"
+        - "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:${LOADTEST_CONTAINER_PORT:-8000}${LOADTEST_HEALTH_PATH:-/}', timeout=5)\""
+      interval: 5s
+      timeout: 6s
+      retries: 30
+      start_period: 40s
+
+  worker:
+    profiles: ["worker"]
+    build:
+      context: ../../../..
+      dockerfile: "${LOADTEST_WORKER_DOCKERFILE:-Dockerfile}"
+    env_file: loadtest.env
+    environment: *django-env
+    command: >
+      ${LOADTEST_WORKER_COMMAND:-sh -c "echo defina LOADTEST_WORKER_COMMAND && exit 1"}
+    depends_on:
+      db:
+        condition: service_healthy
+
+  locust:
+    build:
+      context: .
+      dockerfile: Dockerfile.locust
+    env_file: loadtest.env
+    environment:
+      # NÃO coloque default com chaves aqui (ex.: "loadtest+{i}@..."): o
+      # interpolador do Compose encerra o ${VAR:-default} no PRIMEIRO "}", então
+      # o {i} quebra a expressão e o valor vira "loadtest+{i@...}" — o
+      # locustfile estoura KeyError no on_start e o run sai com 0 requests.
+      # Vazio aqui = default do locustfile.
+      LOADTEST_USER_PATTERN: "${LOADTEST_USER_PATTERN:-}"
+      LOADTEST_PASSWORD: "${LOADTEST_PASSWORD:-LoadTest!2024}"
+      LOADTEST_USER_POOL: "${LOADTEST_USER_POOL:-50}"
+      LOADTEST_FAIL_RATIO: "${LOADTEST_FAIL_RATIO:-0.01}"
+      LOADTEST_P95_MS: "${LOADTEST_P95_MS:-800}"
+      LOADTEST_P99_MS: "${LOADTEST_P99_MS:-1500}"
+      # Tasks caras desligadas por padrão — tag do Locust não exclui nada.
+      LOADTEST_ALLOW_EXPENSIVE: "${LOADTEST_ALLOW_EXPENSIVE:-0}"
+    volumes:
+      - ./locustfile.py:/mnt/locust/locustfile.py:ro
+      - ../reports:/mnt/results
+    ports:
+      # Web UI do Locust, quando rodado sem --headless.
+      - "8089:8089"
+    depends_on:
+      web:
+        condition: service_healthy
+
+  # Perfil opcional para carga distribuída (>1000 usuários virtuais).
+  # Suba com: docker compose -f docker-compose.loadtest.yml --profile distributed up
+  locust-worker:
+    profiles: ["distributed"]
+    build:
+      context: .
+      dockerfile: Dockerfile.locust
+    command: ["-f", "/mnt/locust/locustfile.py", "--worker", "--master-host", "locust"]
+    env_file: loadtest.env
+    environment:
+      LOADTEST_USER_PATTERN: "${LOADTEST_USER_PATTERN:-}"
+      LOADTEST_PASSWORD: "${LOADTEST_PASSWORD:-LoadTest!2024}"
+      LOADTEST_USER_POOL: "${LOADTEST_USER_POOL:-50}"
+    volumes:
+      - ./locustfile.py:/mnt/locust/locustfile.py:ro
+    depends_on:
+      - locust

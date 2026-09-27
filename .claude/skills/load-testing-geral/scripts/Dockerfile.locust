@@ -1,0 +1,20 @@
+# Imagem do gerador de carga. Enxuta de propósito: o container do Locust
+# concorre por CPU com o app quando ambos rodam na mesma máquina, então ele não
+# carrega nada do Django.
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+# Fixe a versão para que dois runs comparados usem o mesmo gerador de carga.
+ARG LOCUST_VERSION=2.32.4
+
+RUN pip install --no-cache-dir "locust==${LOCUST_VERSION}"
+
+WORKDIR /mnt/locust
+
+# O locustfile e o diretório de resultados entram por bind mount (ver
+# docker-compose.loadtest.yml), então editar o cenário não exige rebuild.
+
+ENTRYPOINT ["locust"]
+CMD ["-f", "/mnt/locust/locustfile.py"]

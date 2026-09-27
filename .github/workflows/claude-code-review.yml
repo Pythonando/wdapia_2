@@ -1,0 +1,57 @@
+name: Claude Code Reviewa
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened, closed]
+
+
+jobs:
+  claude-review:
+    if: |
+      (github.event.pull_request.merged != true) && (
+        github.event.pull_request.author_association == 'MEMBER' ||
+        github.event.pull_request.author_association == 'OWNER' ||
+        github.event.pull_request.author_association == 'COLLABORATOR'
+      )
+
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+      
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Claude Code Review
+        id: claude-review
+        uses: anthropics/claude-code-action@v1
+        with: 
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
+          plugins: 'code-review@claude-code-plugins'
+          prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
+          use_sticky_comment: 'true'
+          claude_args: |
+            --max-turns 20
+            --system-prompt "Você é um revisor sênior Python/Django. Revise em português. Foque em: segurança (OWASP), queries N+1, lógica de negócio e aderência ao CLAUDE.md do projeto."
+          
+      - name: Gerar testes automaticamente
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            Analise o diff deste PR: ${{ github.repository }}/pull/${{ github.event.pull_request.number }}.
+            
+            Para cada função ou método novo que não possua testes correspondentes:
+            1. Crie testes pytest em português
+            2. Salve nos arquivos de teste existentes ou crie novos seguindo o padrão tests/test_*.py
+            3. Faça commit diretamente na branch do PR com a mensagem "test: testes gerados automaticamente pelo Claude"
+            
+            Se todos os novos códigos já tiverem testes, não faça nada e comente no PR: "✅ Cobertura de testes OK"
+          claude_args: |
+            --max-turns 20

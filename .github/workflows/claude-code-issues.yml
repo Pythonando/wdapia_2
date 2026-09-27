@@ -1,0 +1,59 @@
+name: Triagem de Issues com Claude
+
+on:
+  issues:
+    types: [opened]  
+
+jobs:
+  triage:
+    name: Analisar e comentar na issue
+    runs-on: ubuntu-latest
+
+    permissions:
+      issues: write      
+      contents: read
+      id-token: write  
+      pull-requests: write
+
+    steps:
+      - name: Checkout do repositório
+        uses: actions/checkout@v4
+
+      - name: Claude analisa e comenta na issue
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          show_full_output: 'true'
+          prompt: |
+            Uma nova issue foi aberta neste repositório. 
+            Analise-a com cuidado e poste um comentário de triagem estruturado.
+
+            ## Sua análise deve conter exatamente estas seções:
+
+            ### 🏷️ Classificação
+            - **Tipo:** [bug | feature | melhoria | dúvida | documentação]
+            - **Severidade:** [crítico | alto | médio | baixo]
+            - **Complexidade:** [X story points] — justifique brevemente
+
+            ### 📁 Arquivos Possivelmente Afetados
+            Liste os arquivos ou diretórios do repositório que provavelmente
+            serão tocados para resolver essa issue. Se não souber, indique as
+            áreas do código (ex: "módulo de autenticação").
+
+            ### ✅ Subtarefas Sugeridas
+            Quebre a issue em subtarefas acionáveis usando checkboxes do GitHub:
+            - [ ] Subtarefa 1
+            - [ ] Subtarefa 2
+            (adapte ao contexto real da issue)
+
+            ### 🔗 Issues Relacionadas
+            Verifique se existem issues abertas com tema similar e liste os links.
+            Se não encontrar nenhuma, escreva: "Nenhuma issue relacionada encontrada."
+
+            ### 💬 Observações
+            Qualquer ponto de atenção, risco técnico ou informação que esteja
+            faltando na issue para que ela possa ser implementada corretamente.
+          
+          claude_args: |
+            --max-turns 30
+            --dangerously-skip-permissions

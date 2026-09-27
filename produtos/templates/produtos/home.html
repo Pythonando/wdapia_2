@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Produtos</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: system-ui, sans-serif; background: #f6f7f9; color: #1f2328; }
+    main { max-width: 640px; margin: 0 auto; padding: 16px; }
+    input, button { width: 100%; font: inherit; padding: 8px; }
+    .card { background: #fff; border: 1px solid #d0d7de; border-radius: 8px; padding: 16px; }
+    .campo { margin-bottom: 12px; }
+    label { display: block; margin-bottom: 4px; font-weight: 600; }
+    input { border: 1px solid #d0d7de; border-radius: 6px; }
+    button { border: 0; border-radius: 6px; background: #1f6feb; color: #fff; cursor: pointer; }
+    .errorlist { margin: 4px 0 0; padding: 0; list-style: none; color: #cf222e; font-size: 0.9em; }
+    .lista { margin: 0; padding: 0; list-style: none; }
+    .lista li { display: flex; justify-content: space-between; gap: 12px; padding: 10px 12px; background: #fff; border: 1px solid #d0d7de; border-radius: 6px; margin-bottom: 8px; }
+    .nome { overflow-wrap: anywhere; }
+    .qtd { font-variant-numeric: tabular-nums; font-weight: 600; white-space: nowrap; }
+    .vazio { color: #656d76; }
+    .msg { padding: 8px 12px; border-radius: 6px; background: #e6f4ea; color: #1e6b34; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Produtos</h1>
+
+    {% for message in messages %}
+      <p class="msg msg-{{ message.tags }}">{{ message }}</p>
+    {% endfor %}
+
+    <form method="post" action="{% url 'produtos:home' %}" class="card">
+      {% csrf_token %}
+      {{ form.non_field_errors }}
+      {% for field in form %}
+        <div class="campo">
+          <label for="{{ field.id_for_label }}">{{ field.label }}</label>
+          {{ field }}
+          {{ field.errors }}
+        </div>
+      {% endfor %}
+      <button type="submit">Cadastrar</button>
+    </form>
+
+    <section>
+      <h2>Produtos cadastrados</h2>
+      {% if produtos %}
+        <ul class="lista">
+          {% for produto in produtos %}
+            <li><span class="nome">{{ produto.nome }}</span> <span class="qtd">{{ produto.quantidade }}</span></li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <p class="vazio">Nenhum produto cadastrado ainda.</p>
+      {% endif %}
+    </section>
+  </main>
+</body>
+</html>
