@@ -12,6 +12,7 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 
 import os
 from pathlib import Path
+from decouple import config
 from dotenv import load_dotenv
 from core.logging_config import get_logging_config
 
@@ -25,12 +26,14 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-elzqnmoj^1l3-l(bm5i1a3xewu7(+7vtvog308(czm1wxf2ohh'
+SECRET_KEY = config('SECRET_KEY')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = config('DEBUG', default=False, cast=bool)
 
-ALLOWED_HOSTS = ['localhost', '127.0.0.1', 'host.docker.internal']
+ALLOWED_HOSTS = ['localhost', '127.0.0.1', 'host.docker.internal', '.railway.app']
+
+CSRF_TRUSTED_ORIGINS = ['https://*.railway.app']
 
 
 # Application definition
@@ -50,6 +53,7 @@ MIDDLEWARE = [
     'elasticapm.contrib.django.middleware.TracingMiddleware',
     'core.middleware.RequestTrackingMiddleware',
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -81,12 +85,28 @@ WSGI_APPLICATION = 'core.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
 
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+if DEBUG:
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': BASE_DIR / 'db.sqlite3',
+        }
     }
-}
+else:
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.postgresql',
+            'NAME': config('PGDATABASE'),
+            'USER': config('PGUSER'),
+            'PASSWORD': config('PGPASSWORD'),
+            'HOST': config('PGHOST'),
+            'PORT': config('PGPORT'),
+            'CONN_MAX_AGE': 600,
+            'OPTIONS': {
+                'connect_timeout': 10,
+            }
+        }
+    }
 
 
 # Password validation
@@ -124,6 +144,20 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/5.2/howto/static-files/
 
 STATIC_URL = 'static/'
+STATIC_ROOT = BASE_DIR / 'staticfiles'
+
+STORAGES = {
+    'default': {
+        'BACKEND': 'django.core.files.storage.FileSystemStorage',
+    },
+    'staticfiles': {
+        'BACKEND': (
+            'django.contrib.staticfiles.storage.StaticFilesStorage'
+            if DEBUG
+            else 'whitenoise.storage.CompressedManifestStaticFilesStorage'
+        ),
+    },
+}
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field

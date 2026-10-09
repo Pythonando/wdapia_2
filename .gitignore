@@ -6,6 +6,8 @@ strix/
 strix
 # C extensions
 *.so
+graphify-out/
+htmlcov/
 
 # Distribution / packaging
 .Python
@@ -225,3 +227,6 @@ __marimo__/
 Thumbs.db
 *.tmp
 *.swp
+
+# Collected static files
+staticfiles/
