@@ -173,7 +173,7 @@ elas precisam ser referenciadas (ex.: `PGHOST=${{Postgres.PGHOST}}`). Não as co
 ## 7. Comando de start
 
 **Se houver `Dockerfile` na raiz**, o Railway builda por ele e ignora o `Procfile`: o start
-é o `CMD`/entrypoint da imagem (neste repositório, `entrypoint.prod.sh`). Confira que ele
+é o `CMD` da imagem (neste repositório, o gunicorn roda direto no `CMD`). Confira que ele
 roda `migrate` e `collectstatic` em sequência (sem `&`) e sobe o gunicorn com o bind
 explícito — sem `--bind` ele escuta só em `127.0.0.1:8000` e o Railway devolve 502:
 

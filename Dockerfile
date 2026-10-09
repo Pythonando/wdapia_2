@@ -15,6 +15,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-RUN chmod +x  /app/entrypoint.prod.sh
-
-CMD ["/app/entrypoint.prod.sh"]
+CMD python manage.py migrate --noinput \
+    && python manage.py collectstatic --noinput \
+    && exec gunicorn core.wsgi --bind 0.0.0.0:${PORT:-8000}
