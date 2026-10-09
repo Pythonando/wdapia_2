@@ -172,17 +172,28 @@ elas precisam ser referenciadas (ex.: `PGHOST=${{Postgres.PGHOST}}`). Não as co
 
 ## 7. Comando de start
 
-**Se houver `Dockerfile` na raiz**, o Railway builda por ele e ignora o `Procfile`: o start
-é o `CMD` da imagem (neste repositório, o gunicorn roda direto no `CMD`). Confira que ele
-roda `migrate` e `collectstatic` em sequência (sem `&`) e sobe o gunicorn com o bind
-explícito — sem `--bind` ele escuta só em `127.0.0.1:8000` e o Railway devolve 502:
+**Não combine `Dockerfile` com `Procfile`.** Em serviços buildados por `Dockerfile`, o
+Railway executa o start command (do `Procfile`, do `railway.json` ou das configurações do
+serviço) em *exec form*, sem shell: numa cadeia `a && b && c` só o primeiro programa roda
+e o resto é ignorado em silêncio (sintoma: o log mostra o `migrate` e mais nada, e o site
+devolve 502). O `$PORT` também não é expandido.
 
-```bash
-exec gunicorn core.wsgi --bind "0.0.0.0:${PORT:-8000}"
+**Com `Dockerfile` na raiz** (caso deste repositório): não crie `Procfile` e deixe vazio o
+"Custom Start Command" do serviço. O `collectstatic` roda no build e o `CMD`, em shell
+form, aplica as migrations e sobe o gunicorn com o bind explícito — sem `--bind` ele
+escuta só em `127.0.0.1:8000` e o Railway devolve 502:
+
+```dockerfile
+RUN DEBUG=False SECRET_KEY=build PGDATABASE=build PGUSER=build PGPASSWORD=build PGHOST=build PGPORT=5432 \
+    python manage.py collectstatic --noinput
+
+CMD python manage.py migrate --noinput && exec gunicorn core.wsgi --bind 0.0.0.0:${PORT:-8000}
 ```
 
-**Se não houver `Dockerfile`** nem `Procfile` (nem start command configurado no Railway),
-crie na raiz:
+Se for inevitável usar um start command no Railway com `Dockerfile`, embrulhe em shell:
+`/bin/sh -c "python manage.py migrate && exec gunicorn core.wsgi --bind 0.0.0.0:$PORT"`.
+
+**Sem `Dockerfile`** (build automático do Railway), crie o `Procfile` na raiz:
 
 ```procfile
 web: python manage.py migrate && python manage.py collectstatic --noinput && gunicorn core.wsgi --bind 0.0.0.0:$PORT
