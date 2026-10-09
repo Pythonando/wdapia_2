@@ -172,7 +172,17 @@ elas precisam ser referenciadas (ex.: `PGHOST=${{Postgres.PGHOST}}`). Não as co
 
 ## 7. Comando de start
 
-Se ainda não houver `Procfile` (nem start command configurado no Railway), crie na raiz:
+**Se houver `Dockerfile` na raiz**, o Railway builda por ele e ignora o `Procfile`: o start
+é o `CMD`/entrypoint da imagem (neste repositório, `entrypoint.prod.sh`). Confira que ele
+roda `migrate` e `collectstatic` em sequência (sem `&`) e sobe o gunicorn com o bind
+explícito — sem `--bind` ele escuta só em `127.0.0.1:8000` e o Railway devolve 502:
+
+```bash
+exec gunicorn core.wsgi --bind "0.0.0.0:${PORT:-8000}"
+```
+
+**Se não houver `Dockerfile`** nem `Procfile` (nem start command configurado no Railway),
+crie na raiz:
 
 ```procfile
 web: python manage.py migrate && python manage.py collectstatic --noinput && gunicorn core.wsgi --bind 0.0.0.0:$PORT

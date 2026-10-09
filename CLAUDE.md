@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Environment
 
-- Django 5.2 on Python 3.11, with a local virtualenv in `venv/` (not `.venv`).
+- Django 5.2 on Python 3.11 locally, with a virtualenv in `venv/` (not `.venv`). Production runs on **Python 3.12**, because the `Dockerfile` starts from `python:3.12` (see Deployment). Avoid syntax or packages that work on only one of the two versions.
 - Activate the venv directly instead of prefixing commands: `source venv/bin/activate`.
 - `requirements.txt` exists and is **curated**: it lists only direct dependencies with pinned versions. Never overwrite it with `pip freeze` (the `venv/` also holds dev-only tooling that must not reach production); add new packages by hand with the installed version.
 
@@ -13,7 +13,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   | `Django`, `asgiref`, `sqlparse` | The framework and its dependencies. |
   | `python-decouple` | `config()` in `core/settings.py` reads `SECRET_KEY`, `DEBUG` and the `PG*` variables. |
   | `python-dotenv` | `load_dotenv()` in `core/settings.py` loads `.env` for the variables read with `os.getenv` (logging, Elastic APM, slow-request threshold). |
-  | `gunicorn` | Production WSGI server (see `Procfile`). |
+  | `gunicorn` | Production WSGI server, started by `entrypoint.prod.sh` (see Deployment). |
   | `whitenoise` | Serves static files from the Django process in production. |
   | `psycopg2-binary` | Postgres driver, used when `DEBUG=False`. |
   | `elastic-apm` | APM agent: an installed app, a middleware and a logging handler. |
@@ -41,7 +41,7 @@ Two readers coexist in `core/settings.py`: `decouple.config()` (for `SECRET_KEY`
 | `ELASTIC_APM_SECRET_TOKEN` | `os.getenv` | empty | APM server token. |
 | `ELASTIC_APM_TRANSACTION_SAMPLE_RATE` | `os.getenv` | `1.0` | Fraction of transactions sampled. |
 | `APP_HEALTH_URL` | not read by Django | — | Used only by the heartbeat container in `observability/docker-compose.yml`. |
-| `PORT` | not read by Django | — | Injected by Railway and used by the `Procfile` for the gunicorn bind. |
+| `PORT` | not read by Django | — | Injected by Railway. `entrypoint.prod.sh` uses it for the gunicorn bind (`0.0.0.0:${PORT:-8000}`, so it falls back to 8000 when unset). The unused `Procfile` reads it too. |
 
 ## Commands
 
@@ -90,13 +90,52 @@ There's no linter, formatter, or pytest setup configured.
 
 The project is prepared to run on Railway. Locally it behaves as before (SQLite, `runserver`); on Railway the same code runs behind gunicorn, talks to Postgres and serves its own static files through WhiteNoise. The procedure that produced this setup is the skill [`.claude/skills/django-deploy`](.claude/skills/django-deploy/SKILL.md); follow it when repeating or extending the deploy configuration.
 
-- `Procfile` defines the start command, which runs on every start of the service:
+In plain terms: Railway receives the repository, follows the recipe in the `Dockerfile` to build a sealed box (a container image) with Python and the dependencies inside, and then switches the box on. Switching it on runs one script, `entrypoint.prod.sh`, which prepares the database, gathers the static files and only then opens the door to visitors. Railway's proxy knocks on that door from outside the box, so the door has to face outward; that is what the gunicorn bind is about.
 
-  ```procfile
-  web: python manage.py migrate && python manage.py collectstatic --noinput && gunicorn core.wsgi --bind 0.0.0.0:$PORT
+```mermaid
+graph TD
+    A[Push to the repository] --> B[Railway finds Dockerfile at the root]
+    B --> C[Build: python:3.12, pip install -r requirements.txt, COPY . .]
+    C --> D[Container start: CMD /app/entrypoint.prod.sh]
+    D --> E[migrate --noinput]
+    E -->|fails| X[Container exits, deploy fails]
+    E -->|ok| F[collectstatic --noinput]
+    F -->|fails| X
+    F -->|ok| G[exec gunicorn core.wsgi --bind 0.0.0.0:PORT]
+    G --> H[Railway proxy reaches the app]
+    B -.->|ignored while a Dockerfile exists| P[Procfile]
+```
+
+- **The `Dockerfile` at the repository root is what Railway builds.** Because it exists, Railway does not use its automatic builder, and the `Procfile` is **not** used.
+
+  | Step in `Dockerfile` | What it does |
+  | --- | --- |
+  | `FROM python:3.12` | Base image. This is where the production Python version is fixed (the local `venv/` is 3.11). |
+  | `WORKDIR /app` | The code lives in `/app` inside the container. |
+  | `ENV PYTHONDONTWRITEBYTECODE=1`, `ENV PYTHONUNBUFFERED=1` | No `.pyc` files, and unbuffered output so logs reach the Railway log viewer immediately. |
+  | `pip install --upgrade pip`, `apt-get install libpq-dev gcc` | System packages for building Postgres clients. |
+  | `COPY requirements.txt .` + `pip install --no-cache-dir -r requirements.txt` | Installs the curated dependencies; copied before the code so the layer is cached. |
+  | `COPY . .` | Copies the whole repository into the image. |
+  | `chmod +x /app/entrypoint.prod.sh` | Makes the script executable (it is committed with mode `644`, so this line is required). |
+  | `CMD ["/app/entrypoint.prod.sh"]` | The start command of the container. |
+
+- **`entrypoint.prod.sh` is the start command**, run on every start of the container:
+
+  ```bash
+  #!/usr/bin/env bash
+  set -e
+
+  python manage.py migrate --noinput
+  python manage.py collectstatic --noinput
+
+  exec gunicorn core.wsgi --bind "0.0.0.0:${PORT:-8000}"
   ```
 
-  The steps are chained with `&&`, so a failed migration or `collectstatic` stops the service from starting.
+  - `set -e` makes a failed `migrate` or `collectstatic` abort the script, so the service does not start half-prepared.
+  - The steps run in sequence, in the foreground. `collectstatic` must finish before gunicorn starts, because with `DEBUG=False` the WhiteNoise manifest storage needs `staticfiles/` to be complete.
+  - **The `--bind "0.0.0.0:${PORT:-8000}"` is mandatory.** Without `--bind`, gunicorn listens on `127.0.0.1:8000`, which is reachable only from inside the container; Railway's proxy cannot connect and every request returns **502**. `$PORT` is injected by Railway; `8000` is only the fallback for running the image elsewhere.
+  - `exec` replaces the shell with gunicorn, so gunicorn receives the stop signal directly and shuts down cleanly.
+- **`Procfile` is a fallback with no effect** while the `Dockerfile` exists. It holds the equivalent one-line command (`migrate && collectstatic --noinput && gunicorn core.wsgi --bind 0.0.0.0:$PORT`) and would be used only if the `Dockerfile` were removed. A change to the start command belongs in `entrypoint.prod.sh`; keep the `Procfile` in step with it or delete it.
 - Variables to set on the Railway app service:
 
   | Variable | Value |
@@ -110,7 +149,12 @@ Known gaps and gotchas (not handled in the code yet):
 - No HTTPS hardening settings exist (`SECURE_SSL_REDIRECT`, `SECURE_HSTS_SECONDS`, `SESSION_COOKIE_SECURE`, `CSRF_COOKIE_SECURE`, `SECURE_PROXY_SSL_HEADER`), so `check --deploy` reports security warnings.
 - The Elastic APM agent is always enabled and `ELASTIC_APM_SERVER_URL` defaults to `http://localhost:8200`. On Railway there is no APM server at that address unless the variable is set to a reachable one.
 - Logs are also written to files under `LOG_DIR` (inside the container on Railway). Only the console handler output reaches the Railway log viewer.
-- The Python version is not pinned for the platform: there is no `runtime.txt`, `.python-version`, `railway.json` or `nixpacks.toml`.
+- A 502 right after a deploy usually means gunicorn is not listening on `0.0.0.0:$PORT`. This already happened: the first version of `entrypoint.prod.sh` ran `gunicorn core.wsgi` with no `--bind` and ran `collectstatic` in the background with `&` (fixed in commit `0beaee7`). Do not remove the bind or put the preparation steps in the background.
+- Python differs between environments: 3.12 in the image (`FROM python:3.12`, a floating tag with no patch version) and 3.11 in the local `venv/`. Tests run locally only, so they never exercise 3.12. There is no `runtime.txt`, `.python-version`, `railway.json` or `nixpacks.toml`; the `Dockerfile` is the only place that fixes the version.
+- The start command exists twice (`entrypoint.prod.sh` and the unused `Procfile`), so the two can drift apart. The skill `.claude/skills/django-deploy` still describes creating a `Procfile` and does not mention the `Dockerfile`.
+- There is no `.dockerignore`, so `COPY . .` copies everything in the build context. On Railway the context is the repository, so git-ignored files are absent; a local `docker build` would also copy `.env`, `venv/`, `db.sqlite3` and `.git/` into the image.
+- `migrate` runs on every container start. That is fine with a single instance; with more than one replica, several containers would run migrations at the same time.
+- The image installs `libpq-dev` and `gcc`, although `requirements.txt` uses `psycopg2-binary`, which ships its own compiled library. They only make the image larger. The container also runs as root, and the `Dockerfile` has no `EXPOSE`.
 - The old hardcoded `django-insecure-...` `SECRET_KEY` was removed from `core/settings.py` but remains in the git history. Never reuse it.
 - `.github/workflows/` contains only Claude Code workflows; nothing runs the test suite or deploys automatically from CI.
 
