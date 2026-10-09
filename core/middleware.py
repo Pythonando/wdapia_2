@@ -10,7 +10,7 @@ logger = logging.getLogger('core')
 
 @sync_and_async_middleware
 class RequestTrackingMiddleware:
-    """Middleware for request tracking, logging, and APM instrumentation."""
+    """Middleware for request tracking and logging."""
 
     def __init__(self, get_response):
         self.get_response = get_response
@@ -26,7 +26,6 @@ class RequestTrackingMiddleware:
         duration_ms = (time.time() - start_time) * 1000
 
         self._log_request(request, response, duration_ms, request_id)
-        self._update_apm_context(request, request_id)
 
         response['X-Request-ID'] = request_id
         if duration_ms > 0:
@@ -67,21 +66,6 @@ class RequestTrackingMiddleware:
                 json.dumps({**log_data, 'event': 'request_ok'}),
                 extra={'request_id': request_id}
             )
-
-    def _update_apm_context(self, request, request_id):
-        """Add request context to APM transaction."""
-        try:
-            from elasticapm import get_client
-            client = get_client()
-            if client:
-                client.set_label('request_id', request_id)
-                if request.user.is_authenticated:
-                    client.set_user_context({
-                        'id': str(request.user.id),
-                        'username': request.user.username,
-                    })
-        except Exception:
-            pass
 
     @staticmethod
     def _get_client_ip(request):

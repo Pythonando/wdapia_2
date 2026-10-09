@@ -12,11 +12,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   | --- | --- |
   | `Django`, `asgiref`, `sqlparse` | The framework and its dependencies. |
   | `python-decouple` | `config()` in `core/settings.py` reads `SECRET_KEY`, `DEBUG` and the `PG*` variables. |
-  | `python-dotenv` | `load_dotenv()` in `core/settings.py` loads `.env` for the variables read with `os.getenv` (logging, Elastic APM, slow-request threshold). |
+  | `python-dotenv` | `load_dotenv()` in `core/settings.py` loads `.env` for the variables read with `os.getenv` (logging, slow-request threshold). |
   | `gunicorn` | Production WSGI server, started by `entrypoint.prod.sh` (see Deployment). |
   | `whitenoise` | Serves static files from the Django process in production. |
   | `psycopg2-binary` | Postgres driver, used when `DEBUG=False`. |
-  | `elastic-apm` | APM agent: an installed app, a middleware and a logging handler. |
   | `python-json-logger` | JSON log formatter used by `core/logging_config.py`. |
   | `coverage` | Test coverage (configured in `.coveragerc`). |
   | `psutil` | Listed, but not imported by the project's own code. |
@@ -35,13 +34,10 @@ Two readers coexist in `core/settings.py`: `decouple.config()` (for `SECRET_KEY`
 | `LOG_DIR` | `os.getenv` | `observability/app-logs` under the repo root | Where `django.log` and `error.log` are written. The directory is created on startup. |
 | `LOG_LEVEL` | `os.getenv` | `DEBUG` | Level for the console and file log handlers. |
 | `SLOW_REQUEST_THRESHOLD` | `os.getenv` | `1000` | Milliseconds above which a request is logged as `slow_request`. |
-| `ELASTIC_APM_SERVER_URL` | `os.getenv` | `http://localhost:8200` | APM server address. |
-| `ELASTIC_APM_SERVICE_NAME` | `os.getenv` | `django-app` | Service name shown in APM. |
-| `ELASTIC_APM_ENVIRONMENT` | `os.getenv` | `development` | Environment label in APM. |
-| `ELASTIC_APM_SECRET_TOKEN` | `os.getenv` | empty | APM server token. |
-| `ELASTIC_APM_TRANSACTION_SAMPLE_RATE` | `os.getenv` | `1.0` | Fraction of transactions sampled. |
-| `APP_HEALTH_URL` | not read by Django | — | Used only by the heartbeat container in `observability/docker-compose.yml`. |
+| `APP_HEALTH_URL` | not read by Django | — | Used only by the heartbeat container in `observability/docker-compose.yml` (default there: `http://host.docker.internal:8000/`, the home page, not `/health/`). |
 | `PORT` | not read by Django | — | Injected by Railway. `entrypoint.prod.sh` uses it for the gunicorn bind (`0.0.0.0:${PORT:-8000}`, so it falls back to 8000 when unset). The unused `Procfile` reads it too. |
+
+The `ELASTIC_APM_*` variables no longer exist: the Elastic APM agent was removed from the app (see Architecture). Nothing reads them, so delete them from any `.env` or Railway service that still has them.
 
 ## Commands
 
@@ -72,11 +68,22 @@ There's no linter, formatter, or pytest setup configured.
 
 - `core/` is the project package. It holds `settings.py`, the root `urls.py` (routes `health/`, `admin/` and includes `produtos.urls` at `''`), and `wsgi.py`/`asgi.py`. It also has its own code:
   - `core/views.py`: `health_check` (URL `/health/`, name `health`, GET only). It runs `SELECT 1` and returns `{"status": "ok"}` with 200, or `{"status": "error", "detail": ...}` with 503 when the database is unreachable.
-  - `core/middleware.py`: `RequestTrackingMiddleware`. It gives every request an ID (reusing an incoming `X-Request-ID` header), logs one JSON line per request to the `core` logger (`request_ok`, `slow_request` above `SLOW_REQUEST_THRESHOLD`, or `request_error` for 5xx), labels the APM transaction, and adds the `X-Request-ID` and `Server-Timing` response headers.
-  - `core/logging_config.py`: `get_logging_config()` builds `LOGGING` with a console handler, rotating JSON files (`django.log`, `error.log`, 10 MB with 5 backups) in `LOG_DIR`, and an Elastic APM handler for errors.
+  - `core/middleware.py`: `RequestTrackingMiddleware`. It gives every request an ID (reusing an incoming `X-Request-ID` header), logs one JSON line per request to the `core` logger (`request_ok`, `slow_request` above `SLOW_REQUEST_THRESHOLD`, or `request_error` for 5xx), and adds the `X-Request-ID` and `Server-Timing` response headers.
+  - `core/logging_config.py`: `get_logging_config()` builds `LOGGING` with a console handler, rotating JSON files (`django.log`, `error.log`, 10 MB with 5 backups) in `LOG_DIR`. The `json` formatter is plain `pythonjsonlogger.jsonlogger.JsonFormatter`, so log lines carry no `trace.id` or `transaction.id`; the `request_id` field written by the middleware is the only way to correlate lines of one request.
   - `core/tests.py`: tests for the middleware, the health check and the logging configuration.
-- Middleware order in `core/settings.py` matters: `elasticapm` `TracingMiddleware`, then `core.middleware.RequestTrackingMiddleware`, then `SecurityMiddleware`, then `whitenoise.middleware.WhiteNoiseMiddleware` (it must stay immediately after `SecurityMiddleware`), then Django's defaults.
-- `observability/` holds a local Elastic stack (`docker-compose.yml` with Elasticsearch, Kibana, APM server, Filebeat, Heartbeat and Metricbeat) that consumes the app's logs and APM data; see `observability/README.md`. It is not part of the Railway deploy.
+- Middleware order in `core/settings.py` matters: `core.middleware.RequestTrackingMiddleware` first (so its timing covers the whole request), then `SecurityMiddleware`, then `whitenoise.middleware.WhiteNoiseMiddleware` (it must stay immediately after `SecurityMiddleware`), then Django's defaults.
+- `observability/` holds a local Elastic stack (`docker-compose.yml` with Elasticsearch, Kibana, APM server, Filebeat, Heartbeat and Metricbeat). It is not part of the Railway deploy.
+  - **The app has no Elastic APM agent any more.** It was removed (the `elasticapm` installed app, its `TracingMiddleware`, the `ELASTIC_APM` settings dict, the logging handler and the `elastic-apm` package) because Railway has no APM server and the agent filled the log with `elasticapm.transport Failed to submit message: Connection to APM Server timed out (http://localhost:8200)`. Think of the stack as a control room whose camera feed from inside the app was unplugged: the room still gets the app's written diary and still checks from outside whether the door opens.
+  - What the stack still receives from the app:
+
+    | Source | How | What it gives |
+    | --- | --- | --- |
+    | Filebeat | Reads `/var/log/app/*.log`, which is `observability/app-logs` (the default `LOG_DIR`) mounted read-only | The JSON lines of `django.log` and `error.log`, including the per-request lines of `RequestTrackingMiddleware`. |
+    | Heartbeat | HTTP check on `APP_HEALTH_URL`, TCP check on port 8000 and ICMP ping of `APP_HOST` | Uptime and response time. |
+    | Metricbeat | Host and Docker metrics | CPU, memory and disk of the machine, not of the Django process. |
+
+  - What it no longer receives: traces, spans, APM errors and the per-process metrics of the agent (`traces-apm*`, `logs-apm.error*`, `metrics-apm*`). The `apm-server` and `setup-apm` services still exist in the compose file and still start, but nothing sends data to port 8200.
+  - Stale after the removal, and not yet updated: `observability/README.md` still documents the `ELASTIC_APM_*` variables, the `TracingMiddleware`, the `trace.id` injection in logs and the APM screens in Kibana; the agent `.claude/agents/observability-analyst.md` still queries the `traces-apm*`, `logs-apm.error*` and `metrics-apm.internal*` indices, which stay empty; the comment in `observability/filebeat/filebeat.yml` still mentions the `trace.id` and `transaction.id` fields. Do not follow those parts.
 - `produtos/` is the only app. It serves the home page (`produtos:home`, URL `/`): a single function view `home` with a `ProdutoForm` (ModelForm) to register a `Produto` (nome, quantidade, criado_em) and a newest-first list on the same page. A valid POST saves, adds a `messages.success`, and redirects back to `/` (Post/Redirect/Get). Validation rules live on the model fields, and the form applies them. Tests are in `produtos/tests.py`. Specs for the feature are in `specs/001-product-registry-home/`.
 - New apps belong at the repository root next to `core/`, and their URLs are wired in with `include()` in `core/urls.py`.
 - Templates: `TEMPLATES['DIRS']` is empty and `APP_DIRS=True`, so templates currently resolve only from `<app>/templates/`. 
@@ -147,7 +154,7 @@ graph TD
 Known gaps and gotchas (not handled in the code yet):
 
 - No HTTPS hardening settings exist (`SECURE_SSL_REDIRECT`, `SECURE_HSTS_SECONDS`, `SESSION_COOKIE_SECURE`, `CSRF_COOKIE_SECURE`, `SECURE_PROXY_SSL_HEADER`), so `check --deploy` reports security warnings.
-- The Elastic APM agent is always enabled and `ELASTIC_APM_SERVER_URL` defaults to `http://localhost:8200`. On Railway there is no APM server at that address unless the variable is set to a reachable one.
+- There is no tracing or error tracking in production. The Elastic APM agent was removed, so on Railway the only signals are the console logs (with the `request_id` and duration of each request) and `/health/`. If `Failed to submit message: Connection to APM Server timed out` shows up in the Railway log again, the running image is older than the removal.
 - Logs are also written to files under `LOG_DIR` (inside the container on Railway). Only the console handler output reaches the Railway log viewer.
 - A 502 right after a deploy usually means gunicorn is not listening on `0.0.0.0:$PORT`. This already happened: the first version of `entrypoint.prod.sh` ran `gunicorn core.wsgi` with no `--bind` and ran `collectstatic` in the background with `&` (fixed in commit `0beaee7`). Do not remove the bind or put the preparation steps in the background.
 - Python differs between environments: 3.12 in the image (`FROM python:3.12`, a floating tag with no patch version) and 3.11 in the local `venv/`. Tests run locally only, so they never exercise 3.12. There is no `runtime.txt`, `.python-version`, `railway.json` or `nixpacks.toml`; the `Dockerfile` is the only place that fixes the version.

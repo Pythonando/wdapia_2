@@ -5,23 +5,6 @@ from logging.handlers import RotatingFileHandler
 from pythonjsonlogger import jsonlogger
 
 
-class ElasticAPMFormatter(jsonlogger.JsonFormatter):
-    """JSON formatter that injects Elastic APM trace context."""
-
-    def add_fields(self, log_record, record, message_dict):
-        super().add_fields(log_record, record, message_dict)
-        try:
-            from elasticapm.trace import get_transaction
-            transaction = get_transaction()
-            if transaction:
-                if hasattr(transaction, 'id'):
-                    log_record['transaction.id'] = transaction.id
-                if hasattr(transaction, 'trace_parent'):
-                    log_record['trace.id'] = transaction.trace_id
-        except Exception:
-            pass
-
-
 def get_logging_config(log_dir: str, log_level: str = 'DEBUG') -> dict:
     """Return Django LOGGING configuration with JSON formatter."""
 
@@ -32,7 +15,7 @@ def get_logging_config(log_dir: str, log_level: str = 'DEBUG') -> dict:
         'disable_existing_loggers': False,
         'formatters': {
             'json': {
-                '()': ElasticAPMFormatter,
+                '()': jsonlogger.JsonFormatter,
                 'format': '%(timestamp)s %(level)s %(name)s %(message)s',
                 'timestamp': True,
             },
@@ -62,19 +45,15 @@ def get_logging_config(log_dir: str, log_level: str = 'DEBUG') -> dict:
                 'backupCount': 5,
                 'formatter': 'json',
             },
-            'elasticapm': {
-                'level': 'ERROR',
-                'class': 'elasticapm.contrib.django.handlers.LoggingHandler',
-            },
         },
         'loggers': {
             'django': {
-                'handlers': ['console', 'file', 'elasticapm'],
+                'handlers': ['console', 'file'],
                 'level': log_level,
                 'propagate': False,
             },
             'django.request': {
-                'handlers': ['console', 'file', 'error_file', 'elasticapm'],
+                'handlers': ['console', 'file', 'error_file'],
                 'level': 'WARNING',
                 'propagate': False,
             },
@@ -89,18 +68,13 @@ def get_logging_config(log_dir: str, log_level: str = 'DEBUG') -> dict:
                 'propagate': False,
             },
             'core': {
-                'handlers': ['console', 'file', 'elasticapm'],
+                'handlers': ['console', 'file'],
                 'level': log_level,
                 'propagate': False,
             },
             'produtos': {
-                'handlers': ['console', 'file', 'elasticapm'],
+                'handlers': ['console', 'file'],
                 'level': log_level,
-                'propagate': False,
-            },
-            'elasticapm': {
-                'handlers': ['console'],
-                'level': 'ERROR',
                 'propagate': False,
             },
         },

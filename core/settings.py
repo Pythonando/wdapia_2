@@ -39,7 +39,6 @@ CSRF_TRUSTED_ORIGINS = ['https://*.railway.app']
 # Application definition
 
 INSTALLED_APPS = [
-    'elasticapm.contrib.django',
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
@@ -50,7 +49,6 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
-    'elasticapm.contrib.django.middleware.TracingMiddleware',
     'core.middleware.RequestTrackingMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'whitenoise.middleware.WhiteNoiseMiddleware',
@@ -170,22 +168,6 @@ os.makedirs(LOG_DIR, exist_ok=True)
 
 # Logging Configuration
 LOGGING = get_logging_config(LOG_DIR, os.getenv('LOG_LEVEL', 'DEBUG'))
-
-# Elastic APM Configuration
-ELASTIC_APM = {
-    'SERVICE_NAME': os.getenv('ELASTIC_APM_SERVICE_NAME', 'django-app'),
-    'SERVER_URL': os.getenv('ELASTIC_APM_SERVER_URL', 'http://localhost:8200'),
-    'ENVIRONMENT': os.getenv('ELASTIC_APM_ENVIRONMENT', 'development'),
-    'SECRET_TOKEN': os.getenv('ELASTIC_APM_SECRET_TOKEN', ''),
-    'CAPTURE_BODY': 'errors',
-    'TRANSACTION_SAMPLE_RATE': float(os.getenv('ELASTIC_APM_TRANSACTION_SAMPLE_RATE', '1.0')),
-    'DJANGO_TRANSACTION_NAME_FROM_ROUTE': True,
-    'CAPTURE_HEADERS': True,
-    'LOG_LEVEL': 'ERROR',
-    'SPAN_FRAMES_MIN_DURATION': '5ms',
-    'DISABLE_SEND': False,
-    'DEBUG': DEBUG,
-}
 
 # Application configuration
 SLOW_REQUEST_THRESHOLD = int(os.getenv('SLOW_REQUEST_THRESHOLD', '1000'))
